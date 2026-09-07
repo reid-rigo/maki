@@ -642,6 +642,7 @@ impl<'h> Agent<'h> {
             &self.config,
             instructions,
             carry_len,
+            self.session_id.as_ref(),
         )
         .await?;
         // The summariser can be a different model, so price this with

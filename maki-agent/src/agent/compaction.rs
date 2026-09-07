@@ -4,6 +4,7 @@ use maki_config::{AgentConfig, CompactionBuffer};
 use maki_providers::{
     ContentBlock, Message, Model, RequestOptions, Role, StreamResponse, TokenUsage,
 };
+use maki_storage::id::SessionRef;
 use tracing::info;
 
 use super::history::{History, remove_orphaned_tool_results};
@@ -66,6 +67,7 @@ pub(super) async fn compact_history(
     config: &AgentConfig,
     instructions: Option<&str>,
     carry_len: usize,
+    session_id: Option<&SessionRef>,
 ) -> Result<TokenUsage, AgentError> {
     let compact_start = std::time::Instant::now();
     let summarized = history.len().saturating_sub(carry_len);
@@ -93,7 +95,7 @@ pub(super) async fn compact_history(
             // The compaction prompt is built here, so the estimate is all we
             // have and the session's measured size describes other messages.
             0,
-            None,
+            session_id,
         )
         .await
         {
@@ -172,6 +174,7 @@ pub async fn compact(
     event_tx: &EventSender,
     config: &AgentConfig,
     instructions: Option<&str>,
+    session_id: Option<&SessionRef>,
 ) -> Result<(), AgentError> {
     let cancel = CancelToken::none();
     let usage = compact_history(
@@ -183,6 +186,7 @@ pub async fn compact(
         config,
         instructions,
         0,
+        session_id,
     )
     .await?;
     if let Some(post) = normalize(config.post_compaction_instructions.as_deref()) {
@@ -330,6 +334,7 @@ mod tests {
     struct MockProvider {
         responses: Mutex<Vec<Result<StreamResponse, AgentError>>>,
         requests: Mutex<Vec<Vec<Message>>>,
+        sessions: Mutex<Vec<Option<String>>>,
     }
 
     impl MockProvider {
@@ -337,6 +342,7 @@ mod tests {
             Self {
                 responses: Mutex::new(responses),
                 requests: Mutex::new(Vec::new()),
+                sessions: Mutex::new(Vec::new()),
             }
         }
     }
@@ -350,10 +356,14 @@ mod tests {
             _: &'a Value,
             _: &'a flume::Sender<ProviderEvent>,
             _: RequestOptions,
-            _: Option<&'a SessionRef>,
+            session_id: Option<&'a SessionRef>,
         ) -> BoxFuture<'a, Result<StreamResponse, AgentError>> {
-            Box::pin(async {
+            Box::pin(async move {
                 self.requests.lock().unwrap().push(messages.to_vec());
+                self.sessions
+                    .lock()
+                    .unwrap()
+                    .push(session_id.map(|s| s.as_str().to_string()));
                 let mut responses = self.responses.lock().unwrap();
                 assert!(!responses.is_empty(), "MockProvider: no more responses");
                 responses.remove(0)
@@ -422,6 +432,7 @@ mod tests {
                 &EventSender::new(raw_tx, 0),
                 &AgentConfig::default(),
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -457,6 +468,7 @@ mod tests {
                 &EventSender::new(raw_tx, 0),
                 &AgentConfig::default(),
                 None,
+                None,
             )
             .await
             .expect_err("empty summary must fail");
@@ -488,6 +500,7 @@ mod tests {
                 &EventSender::new(raw_tx, 0),
                 &config,
                 Some(REQUEST_EXTRA),
+                None,
             )
             .await
             .unwrap();
@@ -568,6 +581,7 @@ mod tests {
                 &AgentConfig::default(),
                 None,
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -773,6 +787,7 @@ mod tests {
                 &AgentConfig::default(),
                 None,
                 0,
+                None,
             )
             .await
             .unwrap();
@@ -822,12 +837,42 @@ mod tests {
                 &AgentConfig::default(),
                 None,
                 0,
+                None,
             )
             .await
             .unwrap();
 
             let requests = provider.requests.lock().unwrap();
             assert!(requests[1].len() < requests[0].len(), "{NO_COLLAPSE_MSG}");
+        });
+    }
+
+    /// OpenCode Go rejects requests without `x-opencode-session`, so the
+    /// summariser must ride the conversation's id like every other turn.
+    #[test]
+    fn compact_history_sends_the_conversations_session_id() {
+        smol::block_on(async {
+            let provider = MockProvider::new(vec![Ok(text_response(StopReason::EndTurn))]);
+            let mut history = History::new(vec![Message::user("work".into())]);
+            let (raw_tx, _rx) = flume::unbounded();
+            let session = SessionRef::generate();
+
+            compact_history(
+                &provider,
+                &default_model(),
+                &mut history,
+                &EventSender::new(raw_tx, 0),
+                &CancelToken::none(),
+                &AgentConfig::default(),
+                None,
+                0,
+                Some(&session),
+            )
+            .await
+            .unwrap();
+
+            let sessions = provider.sessions.lock().unwrap();
+            assert_eq!(sessions[0].as_deref(), Some(session.as_str()));
         });
     }
 
@@ -854,6 +899,7 @@ mod tests {
                 &AgentConfig::default(),
                 None,
                 1,
+                None,
             )
             .await
             .unwrap();
@@ -897,6 +943,7 @@ mod tests {
                 &AgentConfig::default(),
                 None,
                 0,
+                None,
             )
             .await
             .unwrap();
