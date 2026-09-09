@@ -93,7 +93,12 @@ maki auth status
 
 ### `maki models`
 
-Lists every model Maki currently knows about (built-ins, discovered, catalog). One model spec per line. Warnings from discovery go to stderr.
+```bash
+maki models
+maki models --refresh    # refetch the models.dev catalog
+```
+
+One spec per line, warnings on stderr. Built-in and script providers are listed live, catalog-backed providers from the models.dev cache, which expires after 24 hours and supplies model pricing and context windows. `--refresh` refetches it. When the refetch fails, the cached catalog stays in place, the list still prints, and the command exits non-zero.
 
 ### `maki session`
 
