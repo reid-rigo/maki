@@ -1,32 +1,17 @@
 -- Decomposes a bash command into permission scopes: one scope per command the
--- shell would execute, each judged against allow/deny rules on its own.
+-- shell would execute. Substitutions are walked into, their inner commands
+-- become extra scopes; every scope must earn its own allow.
 --
--- Chains (`&&`, `;`, `|`) walk through `program/list/pipeline/
--- redirected_statement`, and substitutions (`$(...)`, backticks, `<(...)`,
--- `(...)`) are walked INTO: their inner command segments become additional
--- scopes while the outer scope keeps the full raw text, so `git log $(cat f)`
--- scopes as `git log $(cat f)` plus `cat f`. Every scope must earn its own
--- allow; a deny on any one still wins.
---
--- Every bail path below is fail-closed: the caller learns force_prompt and
--- gets the identical opaque scope it would have gotten before. Not sure →
--- prompt is the invariant.
---
--- Tree-sitter's error recovery accepts invalid bash, so the walk pairs the
--- parsed tree with a reserved-word check: `cmd && done` parses but bash
--- rejects it, and only this check notices.
-
--- Limit on substitution nesting, not on overall parse depth: the walk is
--- fully recursive over chains, and the budget guards the constructs that
--- actually inhibit confident decomposition.
+-- Every bail path is fail-closed: the caller force-prompts the full command,
+-- exactly as it would have before. Not sure → prompt. Tree-sitter's error
+-- recovery accepts invalid bash (`cmd && done` parses clean), which is why
+-- the walk pairs the tree with a reserved-word check.
 local MAX_WALK_DEPTH = 4
 
--- Nodes the walk descends into instead of turning into a scope.
--- `redirected_statement` has to be one of them: tree-sitter hangs a trailing
--- `2>&1` off the entire `cd x && cargo test` chain rather than off `cargo
--- test`, so treating it as a leaf turns the whole chain into a single scope
--- starting with `cd `, and a `cd *` allow rule then quietly covers whatever
--- runs after the `&&`.
+-- Nodes the walk descends into instead of turning into a scope. Note that
+-- tree-sitter hangs a trailing `2>&1` off the whole `cd x && cargo test`
+-- chain, not off `cargo test`; treating that as a leaf would put the entire
+-- chain behind a `cd *` allow rule.
 local WALK_THROUGH_TYPES = {
   program = true,
   list = true,
@@ -40,58 +25,23 @@ local REDIRECT_TYPES = {
   herestring_redirect = true,
 }
 
--- Substitution nodes are walked into. Their own text is never emitted as a
--- scope of its own: it is already part of the containing command's raw text,
--- and omitting it is what lets a mid-command substitution stay silent when
--- only the containing command matches a rule.
+-- Walked into; their text is never a scope of its own (it already appears
+-- inside the containing command's raw text).
 local SUBST_TYPES = {
   command_substitution = true,
   process_substitution = true,
   subshell = true,
 }
 
-local RESERVED_WORD_LIST = {
-  "do",
-  "done",
-  "if",
-  "then",
-  "elif",
-  "else",
-  "fi",
-  "while",
-  "until",
-  "for",
-  "in",
-  "case",
-  "esac",
-  "select",
-  "coproc",
-  "break",
-  "continue",
-  "return",
-  "exit",
-}
-local RESERVED_WORDS = {}
-for _, word in ipairs(RESERVED_WORD_LIST) do
-  RESERVED_WORDS[word] = true
-end
-
 -- Node kinds a substitution may hand the walk directly without bailing.
--- Assignments are judged like any command segment: their text is the scope.
--- Everything else inside a substitution — `$(! true)`, `$(for ...)`, `$(done)`
--- — is not confidently decomposable and force-prompts instead.
 local SUBST_COMMAND_TYPES = {
   command = true,
   variable_assignment = true,
 }
 
--- Commands that take their payload from the command text (`eval "$(git
--- status)"` runs whatever `git status` prints) or that forward a word of
--- argv into being a command (`sudo "$(cmd)"` runs the substitution's
--- output as a command) cannot have that payload named as a scope — no
--- rule can cover it — so with a substitution anywhere in the argv they
--- keep today's force-prompt.
-
+-- Every word here runs its argv as commands (payload or process), so no rule
+-- can cover what it actually executes: force-prompt when a substitution is
+-- anywhere in the argv.
 local SELF_EXECUTING_WORDS = {
   eval = true,
   exec = true,
@@ -127,15 +77,40 @@ local SELF_EXECUTING_WORDS = {
   builtin = true,
 }
 
--- Nodes whose substitutions can be reached from a leaf without emitting a
--- scope of the container's own; anything else carrying a substitution (the
--- known case: `arithmetic_expansion`) is not confidently decomposable.
+-- Expansion containers walked through; substitutions elsewhere
+-- (`arithmetic_expansion` etc.) are not confidently decomposable.
 local EXPANSION_THROUGH_TYPES = {
   string = true,
   concatenation = true,
   array = true,
   variable_assignment = true,
 }
+
+local RESERVED_WORD_LIST = {
+  "do",
+  "done",
+  "if",
+  "then",
+  "elif",
+  "else",
+  "fi",
+  "while",
+  "until",
+  "for",
+  "in",
+  "case",
+  "esac",
+  "select",
+  "coproc",
+  "break",
+  "continue",
+  "return",
+  "exit",
+}
+local RESERVED_WORDS = {}
+for _, word in ipairs(RESERVED_WORD_LIST) do
+  RESERVED_WORDS[word] = true
+end
 
 local function node_text(node, source)
   return maki.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
@@ -161,12 +136,9 @@ end
 
 local collect_scopes
 
--- Walking in and collecting the scopes of the substitutions nested inside a
--- scope's own text (strings, assignment values). Only scopes are collected:
--- the containing scope's text already covers the substitution's raw text, so
--- an intermediate node here must not emit a scope, or
--- `echo "pre$(cat f)"`'s `"pre$(cat f)"` would have to earn its own allow and
--- the decomposition would never go quiet.
+-- Collects the scopes of substitutions nested inside a scope's own text
+-- (string values, assignment values); intermediate nodes here must not
+-- emit scopes, or the containing scope could never match a rule silently.
 local function collect_expansion_scopes(node, source, depth, inner)
   if not subtree_has_substitution(node) then
     return {}
@@ -187,8 +159,6 @@ local function collect_expansion_scopes(node, source, depth, inner)
         end
         extend(out, scopes)
       elseif subtree_has_substitution(child) then
-        -- An `arithmetic_expansion` wrapped around a substitution and any
-        -- other unknown container is not confidently decomposable.
         return nil
       end
     end
@@ -197,11 +167,8 @@ local function collect_expansion_scopes(node, source, depth, inner)
 end
 
 -- Returns `{ outer, ...substitution_scopes }` plus a bind position, or `nil`
--- when the walk bailed. `outer[1..n]` are the chain-level scopes at this
--- node; any further entries are substitution scopes, appended right after
--- their containing command's scope. The bind position is the index in that
--- list an outer redirect of this chain would bind to: the last chain-level
--- scope, never a substitution scope.
+-- on bail. The bind position is the list index an outer redirect of this
+-- chain would bind to: the last chain-level scope, never a substitution scope.
 collect_scopes = function(node, source, depth, inner)
   if depth > MAX_WALK_DEPTH then
     return nil
@@ -217,10 +184,9 @@ collect_scopes = function(node, source, depth, inner)
       local child_kind = child:type()
       if child:named() and child_kind ~= "comment" then
         if REDIRECT_TYPES[child_kind] then
+          -- An unquoted heredoc body / here-string is expanded by bash: its
+          -- substitutions really execute, so text-only scopes would miss them.
           if subtree_has_substitution(child) then
-            -- An unquoted heredoc body or here-string is expanded by bash:
-            -- its substitutions execute and text-only collection would
-            -- silently leave their commands unscoped. Not sure → prompt.
             return nil
           end
           redirects[#redirects + 1] = node_text(child, source)
@@ -239,36 +205,28 @@ collect_scopes = function(node, source, depth, inner)
     end
 
     if #redirects > 0 then
-      -- The redirect belongs to the command bash would actually apply it to.
       local text = table.concat(redirects, " ")
       if bind then
         outer[bind] = outer[bind] .. " " .. text
       elseif subst then
-        -- `$(> f)` runs a bare redirect with no command to judge.
-        return nil
+        return nil -- $(> f): a bare redirect, nothing to judge
       else
-        -- A bodiless `> log` has no command and still truncates the file,
-        -- so it becomes a scope of its own instead of vanishing.
+        -- Bodiless `> log`: still truncates, so it must be its own scope.
         outer[1] = text
         bind = 1
       end
     end
 
     if subst and #outer == 0 then
-      -- Degenerate substitution: nothing left to judge.
       return nil
     end
 
     return outer, bind
   end
 
-  -- Whatever is left becomes a scope of its own raw text. That covers plain
-  -- commands and the block forms (`if`, `while`) we deliberately keep whole,
-  -- plus any node type we never thought of, which is what we want: an
-  -- unknown node has to end up in front of the user, not get dropped. Inside
-  -- a walked substitution though, only what the substitution grammar puts at
-  -- command position is trusted; anything else — `$(! true)`, `$(done)` —
-  -- bails to force-prompt.
+  -- Anything unknown becomes a scope of its own raw text: it has to end up
+  -- in front of the user, not get dropped. Inside a walked substitution
+  -- though, only what the grammar puts at command position is trusted.
   local text = node_text(node, source)
   local first_word = text:match("^(%a+)")
 
@@ -279,9 +237,8 @@ collect_scopes = function(node, source, depth, inner)
       break
     end
   end
-  -- An unquoted substitution at command position makes its output the
-  -- executed command itself (`"$(echo ls)"` runs `ls`), and no rule can
-  -- cover that payload, so it can never be decomposed confidently.
+  -- A substitution at command position runs its output as the command
+  -- (`"$(echo ls)"` executes `ls`): no rule can cover that payload.
   if cmd_word then
     local cmd_kind = cmd_word:type()
     local wraps_substitution = SUBST_TYPES[cmd_kind]
