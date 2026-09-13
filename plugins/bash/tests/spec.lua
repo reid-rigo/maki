@@ -104,13 +104,13 @@ case("payload_from_a_substitution_force_prompts", function()
   decomposes("timeout 5 git status", { "timeout 5 git status" })
 end)
 
--- Pin the invariants of the self-executing word list automatically: every
+-- Pin the invariants of the argv-executing word list automatically: every
 -- listed word must force-prompt when a substitution is in its argv, and the
 -- common ones must still decompose without one. Adding a word to the list
 -- adds its test case for free.
-case("self_executing_words_bail_with_any_substitution", function()
-  local words = require("bash_scopes").self_executing_words
-  assert(next(words), "self_executing_words is empty")
+case("argv_executing_words_bail_with_any_substitution", function()
+  local words = require("bash_scopes").argv_executing_words
+  assert(next(words), "argv_executing_words is empty")
   local names = {}
   for word in pairs(words) do
     names[#names + 1] = word
@@ -122,7 +122,7 @@ case("self_executing_words_bail_with_any_substitution", function()
   end
 end)
 
-case("self_executing_words_without_substitution_decompose", function()
+case("argv_executing_words_without_substitution_decompose", function()
   local words = "eval exec source sh bash zsh find sudo env ssh docker nohup nice timeout su"
   for word in words:gmatch("%a+") do
     decomposes(word .. " it", { word .. " it" })
@@ -140,6 +140,15 @@ end)
 case("substitution_in_expansion_default_force_prompts", function()
   -- `${x:-$(cmd)}` executes the substitution when `x` is unset.
   force_prompts("echo ${x:-$(cat f)}")
+end)
+
+case("language_registry_names_execute_argv", function()
+  -- Any word naming a language maki knows bails with a substitution in argv,
+  -- even beyond the hand-maintained list (go/rust/zig are registry-only).
+  for _, word in ipairs({ "go", "rust", "zig", "sh" }) do
+    force_prompts(word .. ' "$(echo payload)"')
+  end
+  decomposes("go test ./pkg", { "go test ./pkg" })
 end)
 
 case("walk_beyond_depth_limit_force_prompts", function()
