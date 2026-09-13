@@ -51,34 +51,34 @@ local SUBST_COMMAND_TYPES = {
 -- to be registered, so they stay pinned. This list holds only what no
 -- grammar registry can know.
 local EVALUATING_COMMANDS = {
-  eval = true,
-  exec = true,
-  source = true,
-  sh = true,
-  zsh = true,
-  ksh = true,
-  dash = true,
-  ash = true,
-  awk = true,
-  perl = true,
-  python3 = true,
-  node = true,
-  find = true,
-  xargs = true,
-  sudo = true,
-  doas = true,
-  env = true,
-  ssh = true,
-  docker = true,
-  nohup = true,
-  nice = true,
-  timeout = true,
-  su = true,
-  setsid = true,
-  stdbuf = true,
-  watch = true,
-  command = true,
-  builtin = true,
+  "eval",
+  "exec",
+  "source",
+  "sh",
+  "zsh",
+  "ksh",
+  "dash",
+  "ash",
+  "awk",
+  "perl",
+  "python3",
+  "node",
+  "find",
+  "xargs",
+  "sudo",
+  "doas",
+  "env",
+  "ssh",
+  "docker",
+  "nohup",
+  "nice",
+  "timeout",
+  "su",
+  "setsid",
+  "stdbuf",
+  "watch",
+  "command",
+  "builtin",
 }
 
 -- Expansion containers walked through; substitutions elsewhere
@@ -117,7 +117,12 @@ local RESERVED_WORDS = {}
 -- `go`, `rust`, …). Union with the static list above — new grammars extend
 -- the bail set without touching this file.
 local function is_evaluating(word)
-  return EVALUATING_COMMANDS[word] or maki.treesitter.language.get_lang(word) ~= nil
+  for _, command in ipairs(EVALUATING_COMMANDS) do
+    if command == word then
+      return true
+    end
+  end
+  return maki.treesitter.language.get_lang(word) ~= nil
 end
 for _, word in ipairs(RESERVED_WORD_LIST) do
   RESERVED_WORDS[word] = true

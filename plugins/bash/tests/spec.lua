@@ -110,10 +110,10 @@ end)
 -- adds its test case for free.
 case("evaluating_commands_bail_with_any_substitution", function()
   local commands = require("bash_scopes").evaluating_commands
-  assert(next(commands), "evaluating_commands is empty")
+  assert(#commands > 0, "evaluating_commands is empty")
   local names = {}
-  for command in pairs(commands) do
-    names[#names + 1] = command
+  for i, command in ipairs(commands) do
+    names[i] = command
   end
   table.sort(names)
   for _, command in ipairs(names) do
