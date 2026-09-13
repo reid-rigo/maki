@@ -1,5 +1,6 @@
 local truncate = require("maki.truncate")
 local ToolView = require("maki.tool_view")
+local bash_scopes = require("bash_scopes")
 local output_limits = require("maki.output_limits")
 local partial = require("maki.partial")
 
@@ -173,85 +174,6 @@ end
 
 local cwd = maki.uv.cwd() or "."
 
-local COMPLEX_TYPES = {
-  command_substitution = true,
-  process_substitution = true,
-  subshell = true,
-  arithmetic_expansion = true,
-}
-
-local function is_complex(node)
-  if COMPLEX_TYPES[node:type()] then
-    return true
-  end
-  for child in node:iter_children() do
-    if is_complex(child) then
-      return true
-    end
-  end
-  return false
-end
-
-local REDIRECT_TYPES = {
-  file_redirect = true,
-  heredoc_redirect = true,
-  herestring_redirect = true,
-}
-
--- Nodes we walk through instead of turning into a scope. `redirected_statement`
--- has to be one of them: tree-sitter hangs a trailing `2>&1` off the entire
--- `cd x && cargo test` chain rather than off `cargo test`, so treating it as a
--- leaf turns the whole chain into a single scope starting with `cd `, and a
--- `cd *` allow rule then quietly covers whatever runs after the `&&`.
-local WALK_THROUGH_TYPES = {
-  program = true,
-  list = true,
-  pipeline = true,
-  redirected_statement = true,
-}
-
-local function node_text(node, source)
-  return maki.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
-end
-
--- Anything we don't walk through becomes one scope, its own text. That covers
--- plain commands and the block forms (`if`, `while`, subshells) we deliberately
--- keep whole, plus any node type we never thought of, which is what we want:
--- an unknown node has to end up in front of the user, not get dropped.
-local function collect_commands(node, source)
-  if not WALK_THROUGH_TYPES[node:type()] then
-    local text = node_text(node, source)
-    return text ~= "" and { text } or {}
-  end
-
-  local out, redirects = {}, {}
-  for child in node:iter_children() do
-    local kind = child:type()
-    if child:named() and kind ~= "comment" then
-      if REDIRECT_TYPES[kind] then
-        redirects[#redirects + 1] = node_text(child, source)
-      else
-        for _, cmd in ipairs(collect_commands(child, source)) do
-          out[#out + 1] = cmd
-        end
-      end
-    end
-  end
-
-  -- The redirect belongs to the last command of the chain, the one bash would
-  -- actually apply it to. A bodiless `> log` has no such command and still
-  -- truncates the file, so it becomes a scope of its own instead of vanishing.
-  if #redirects > 0 then
-    local text = table.concat(redirects, " ")
-    if #out > 0 then
-      out[#out] = out[#out] .. " " .. text
-    else
-      out[1] = text
-    end
-  end
-  return out
-end
-
 local description = [[Execute a bash command.
 Commands run in ]] .. cwd .. [[ by default.
 
@@ -296,21 +218,7 @@ maki.api.register_tool({
       return nil
     end
 
-    local parser = maki.treesitter.get_parser(command, "bash")
-    if not parser then
-      return { scopes = { command }, force_prompt = true }
-    end
-
-    local root = parser:parse()[1]:root()
-    if root:has_error() or is_complex(root) then
-      return { scopes = { command }, force_prompt = true }
-    end
-
-    local segments = collect_commands(root, command)
-    if #segments == 0 then
-      segments = { command }
-    end
-    return { scopes = segments, force_prompt = false }
+    return bash_scopes.scopes(command)
   end,
 
   header = function(input)
