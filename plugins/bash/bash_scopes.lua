@@ -40,26 +40,28 @@ local SUBST_COMMAND_TYPES = {
 }
 
 -- Evaluating commands run their argv as a program rather than treating it as
--- data: shells and interpreters (most of the list) evaluate it as source text,
--- argument-forwarding launchers (sudo/find -exec/xargs/timeout…) evaluate it
--- as which command to run. Either way no rule can cover what they actually
--- execute, so force-prompt when a substitution is anywhere in their argv.
+-- data: shells and interpreters evaluate it as source text, argument-
+-- forwarding launchers (sudo/find -exec/xargs/timeout…) evaluate it as which
+-- command to run. Either way no rule can cover what they actually execute, so
+-- force-prompt when a substitution is anywhere in their argv.
+--
+-- Interpreter names that are treesitter *language* names (`bash`, `python`,
+-- `ruby`, `lua`) resolve through `get_lang` in `is_evaluating` and are not
+-- duplicated here; filetype-only aliases like `sh`/`zsh` are NOT guaranteed
+-- to be registered, so they stay pinned. This list holds only what no
+-- grammar registry can know.
 local EVALUATING_COMMANDS = {
   eval = true,
   exec = true,
   source = true,
   sh = true,
-  bash = true,
   zsh = true,
   ksh = true,
   dash = true,
   ash = true,
   awk = true,
   perl = true,
-  python = true,
   python3 = true,
-  ruby = true,
-  lua = true,
   node = true,
   find = true,
   xargs = true,
@@ -110,9 +112,10 @@ local RESERVED_WORD_LIST = {
   "exit",
 }
 local RESERVED_WORDS = {}
--- A command naming a language maki knows (`get_lang`) evaluates its argv as
--- a program, interpreters included: a union with the static list, so new
--- grammars extend the bail set without touching this file.
+-- Evaluating commands the language registry already names: anything that
+-- resolves through `get_lang` (`bash`, `sh`, `zsh`, `python`, `ruby`, `lua`,
+-- `go`, `rust`, …). Union with the static list above — new grammars extend
+-- the bail set without touching this file.
 local function is_evaluating(word)
   return EVALUATING_COMMANDS[word] or maki.treesitter.language.get_lang(word) ~= nil
 end

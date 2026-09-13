@@ -145,9 +145,14 @@ end)
 case("language_registry_names_execute_argv", function()
   -- Any word naming a language maki knows bails with a substitution in argv,
   -- even beyond the hand-maintained list (go/rust/zig are registry-only).
-  for _, word in ipairs({ "go", "rust", "zig", "sh" }) do
+  -- Any command naming a treesitter *language* maki knows bails with a
+  -- substitution in argv, even beyond the hand-maintained list
+  -- (go/rust/zig are registry-only; bash/python/ruby/lua are removed there).
+  for _, word in ipairs({ "go", "rust", "zig", "python", "ruby" }) do
     force_prompts(word .. ' "$(echo payload)"')
   end
+  -- Registry coverage is filetype-only for shells, so `sh` stays pinned.
+  force_prompts('sh "$(echo payload)"')
   decomposes("go test ./pkg", { "go test ./pkg" })
 end)
 
