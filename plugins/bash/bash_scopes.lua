@@ -118,6 +118,13 @@ local SELF_EXECUTING_WORDS = {
   docker = true,
   nohup = true,
   nice = true,
+  timeout = true,
+  su = true,
+  setsid = true,
+  stdbuf = true,
+  watch = true,
+  command = true,
+  builtin = true,
 }
 
 -- Nodes whose substitutions can be reached from a leaf without emitting a
@@ -161,6 +168,9 @@ local collect_scopes
 -- `echo "pre$(cat f)"`'s `"pre$(cat f)"` would have to earn its own allow and
 -- the decomposition would never go quiet.
 local function collect_expansion_scopes(node, source, depth, inner)
+  if not subtree_has_substitution(node) then
+    return {}
+  end
   local out = {}
   for child in node:iter_children() do
     if child:named() then
@@ -170,7 +180,7 @@ local function collect_expansion_scopes(node, source, depth, inner)
           return nil
         end
         extend(out, scopes)
-      elseif EXPANSION_THROUGH_TYPES[child:type()] and subtree_has_substitution(child) then
+      elseif EXPANSION_THROUGH_TYPES[child:type()] then
         local scopes = collect_expansion_scopes(child, source, depth + 1, inner)
         if not scopes then
           return nil
@@ -261,6 +271,30 @@ collect_scopes = function(node, source, depth, inner)
   -- bails to force-prompt.
   local text = node_text(node, source)
   local first_word = text:match("^(%a+)")
+
+  local cmd_word
+  for child in node:iter_children() do
+    if child:named() and child:type() ~= "comment" then
+      cmd_word = child
+      break
+    end
+  end
+  -- An unquoted substitution at command position makes its output the
+  -- executed command itself (`"$(echo ls)"` runs `ls`), and no rule can
+  -- cover that payload, so it can never be decomposed confidently.
+  if cmd_word then
+    local cmd_kind = cmd_word:type()
+    local wraps_substitution = SUBST_TYPES[cmd_kind]
+      or (
+        cmd_kind ~= "variable_assignment"
+        and EXPANSION_THROUGH_TYPES[cmd_kind]
+        and subtree_has_substitution(cmd_word)
+      )
+    if wraps_substitution then
+      return nil
+    end
+  end
+
   if inner then
     if not SUBST_COMMAND_TYPES[kind] then
       return nil
@@ -285,21 +319,20 @@ collect_scopes = function(node, source, depth, inner)
 end
 
 local function scopes(command)
+  local bail = { scopes = { command }, force_prompt = true }
+
   local parser = maki.treesitter.get_parser(command, "bash")
   if not parser then
-    return { scopes = { command }, force_prompt = true }
+    return bail
   end
 
   local root = parser:parse()[1]:root()
   if root:has_error() then
-    return { scopes = { command }, force_prompt = true }
+    return bail
   end
 
   local segments = collect_scopes(root, command, 0, false)
-  if not segments or #segments == 0 then
-    return { scopes = { command }, force_prompt = true }
-  end
-  return { scopes = segments, force_prompt = false }
+  return (segments and #segments > 0) and { scopes = segments, force_prompt = false } or bail
 end
 
 return {

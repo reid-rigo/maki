@@ -98,8 +98,23 @@ case("payload_from_a_substitution_force_prompts", function()
   force_prompts('env "$(echo cmd)"')
   force_prompts('ssh host "$(echo cmd)"')
   force_prompts('awk "$(echo skip)"')
+  force_prompts('timeout 5 "$(echo cmd)"')
   -- No substitution, no unknown payload: safe as plain argv data.
   decomposes("find . -name x", { "find . -name x" })
+  decomposes("timeout 5 git status", { "timeout 5 git status" })
+end)
+
+case("substitution_at_command_position_force_prompts", function()
+  -- The substitution's output becomes the executed command itself; the
+  -- command that runs is whatever it prints, which no rule can cover.
+  force_prompts("$(echo ls)")
+  force_prompts('"$(echo ls)" -l')
+  force_prompts("`echo ls` f")
+end)
+
+case("substitution_in_expansion_default_force_prompts", function()
+  -- `${x:-$(cmd)}` executes the substitution when `x` is unset.
+  force_prompts("echo ${x:-$(cat f)}")
 end)
 
 case("walk_beyond_depth_limit_force_prompts", function()
