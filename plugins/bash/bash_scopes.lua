@@ -1,17 +1,15 @@
--- Decomposes a bash command into permission scopes: one scope per command the
--- shell would execute. Substitutions are walked into, their inner commands
--- become extra scopes; every scope must earn its own allow.
---
--- Every bail path is fail-closed: the caller force-prompts the full command,
--- exactly as it would have before. Not sure → prompt. Tree-sitter's error
--- recovery accepts invalid bash (`cmd && done` parses clean), which is why
--- the walk pairs the tree with a reserved-word check.
+-- Decomposes a bash command into permission scopes: one per command the
+-- shell would execute; substitutions are walked into and their inner
+-- commands become extra scopes. Every bail is fail-closed: the caller
+-- force-prompts the full command as before. Not sure → prompt. Tree-sitter
+-- accepts invalid bash (`cmd && done` parses clean), which is why the walk
+-- pairs the tree with a reserved-word check.
 local MAX_WALK_DEPTH = 4
 
 -- Nodes the walk descends into instead of turning into a scope. Note that
 -- tree-sitter hangs a trailing `2>&1` off the whole `cd x && cargo test`
--- chain, not off `cargo test`; treating that as a leaf would put the entire
--- chain behind a `cd *` allow rule.
+-- chain, not off `cargo test`; as a leaf, the whole chain hides behind a
+-- `cd *` allow rule.
 local WALK_THROUGH_TYPES = {
   program = true,
   list = true,
@@ -25,31 +23,24 @@ local REDIRECT_TYPES = {
   herestring_redirect = true,
 }
 
--- Walked into; their text is never a scope of its own (it already appears
--- inside the containing command's raw text).
+-- Walked into; their text already appears inside the containing scope's text.
 local SUBST_TYPES = {
   command_substitution = true,
   process_substitution = true,
   subshell = true,
 }
 
--- Node kinds a substitution may hand the walk directly without bailing.
 local SUBST_COMMAND_TYPES = {
   command = true,
   variable_assignment = true,
 }
 
--- Evaluating commands run their argv as a program rather than treating it as
--- data: shells and interpreters evaluate it as source text, argument-
--- forwarding launchers (sudo/find -exec/xargs/timeout…) evaluate it as which
--- command to run. Either way no rule can cover what they actually execute, so
--- force-prompt when a substitution is anywhere in their argv.
---
--- Interpreter names that are treesitter *language* names (`bash`, `python`,
--- `ruby`, `lua`) resolve through `get_lang` in `is_evaluating` and are not
--- duplicated here; filetype-only aliases like `sh`/`zsh` are NOT guaranteed
--- to be registered, so they stay pinned. This list holds only what no
--- grammar registry can know.
+-- Commands that run their argv as a program instead of data: shells and
+-- interpreters, plus argv-forwarding launchers (sudo/find -exec/xargs/…).
+-- Nothing a rule could name, so bail when a substitution is anywhere in
+-- their argv. Treesitter language names (`bash`, `python`, `ruby`, `lua`)
+-- are not duplicated: `is_evaluating` unions with `get_lang`; filetype-only
+-- aliases like `sh`/`zsh` are not guaranteed registered, so pinned here.
 local EVALUATING_COMMANDS = {
   "eval",
   "exec",
@@ -112,10 +103,6 @@ local RESERVED_WORD_LIST = {
   "exit",
 }
 local RESERVED_WORDS = {}
--- Evaluating commands the language registry already names: anything that
--- resolves through `get_lang` (`bash`, `sh`, `zsh`, `python`, `ruby`, `lua`,
--- `go`, `rust`, …). Union with the static list above — new grammars extend
--- the bail set without touching this file.
 local function is_evaluating(word)
   for _, command in ipairs(EVALUATING_COMMANDS) do
     if command == word then
@@ -152,9 +139,9 @@ end
 
 local collect_scopes
 
--- Collects the scopes of substitutions nested inside a scope's own text
--- (string values, assignment values); intermediate nodes here must not
--- emit scopes, or the containing scope could never match a rule silently.
+-- Collects the scopes of substitutions nested inside a scope's own text;
+-- intermediate nodes here must not emit scopes, or the containing scope
+-- could never match a rule silently.
 local function collect_expansion_scopes(node, source, depth, inner)
   if not subtree_has_substitution(node) then
     return {}
@@ -200,8 +187,7 @@ collect_scopes = function(node, source, depth, inner)
       local child_kind = child:type()
       if child:named() and child_kind ~= "comment" then
         if REDIRECT_TYPES[child_kind] then
-          -- An unquoted heredoc body / here-string is expanded by bash: its
-          -- substitutions really execute, so text-only scopes would miss them.
+          -- Unquoted heredoc bodies / here-strings expand: their substitutions really execute.
           if subtree_has_substitution(child) then
             return nil
           end
@@ -227,7 +213,7 @@ collect_scopes = function(node, source, depth, inner)
       elseif subst then
         return nil -- $(> f): a bare redirect, nothing to judge
       else
-        -- Bodiless `> log`: still truncates, so it must be its own scope.
+        -- Bodiless `> log` still truncates: it must be its own scope.
         outer[1] = text
         bind = 1
       end
