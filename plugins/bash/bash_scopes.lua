@@ -86,10 +86,12 @@ local SUBST_COMMAND_TYPES = {
 }
 
 -- Commands that take their payload from the command text (`eval "$(git
--- status)"` prints whatever `git status` prints) cannot have that payload
--- named as a scope — no rule can cover it — so with a substitution anywhere
--- in the argv they keep today's force-prompt. `find`/`xargs` are here because
--- `-exec`/their argv can carry a substitution-built command too.
+-- status)"` runs whatever `git status` prints) or that forward a word of
+-- argv into being a command (`sudo "$(cmd)"` runs the substitution's
+-- output as a command) cannot have that payload named as a scope — no
+-- rule can cover it — so with a substitution anywhere in the argv they
+-- keep today's force-prompt.
+
 local SELF_EXECUTING_WORDS = {
   eval = true,
   exec = true,
@@ -109,6 +111,13 @@ local SELF_EXECUTING_WORDS = {
   node = true,
   find = true,
   xargs = true,
+  sudo = true,
+  doas = true,
+  env = true,
+  ssh = true,
+  docker = true,
+  nohup = true,
+  nice = true,
 }
 
 -- Nodes whose substitutions can be reached from a leaf without emitting a
@@ -198,6 +207,12 @@ collect_scopes = function(node, source, depth, inner)
       local child_kind = child:type()
       if child:named() and child_kind ~= "comment" then
         if REDIRECT_TYPES[child_kind] then
+          if subtree_has_substitution(child) then
+            -- An unquoted heredoc body or here-string is expanded by bash:
+            -- its substitutions execute and text-only collection would
+            -- silently leave their commands unscoped. Not sure → prompt.
+            return nil
+          end
           redirects[#redirects + 1] = node_text(child, source)
         else
           local scopes, child_bind = collect_scopes(child, source, depth, child_inner)

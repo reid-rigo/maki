@@ -94,6 +94,12 @@ case("payload_from_a_substitution_force_prompts", function()
   force_prompts('sh -c "$(cat script.sh)"')
   force_prompts('source "$(git rev-parse --show-toplevel)/foo"')
   force_prompts('find . -name x -exec "$(echo rm -rf /)" {} +')
+  force_prompts('sudo "$(echo reboot)"')
+  force_prompts('env "$(echo cmd)"')
+  force_prompts('ssh host "$(echo cmd)"')
+  force_prompts('awk "$(echo skip)"')
+  -- No substitution, no unknown payload: safe as plain argv data.
+  decomposes("find . -name x", { "find . -name x" })
 end)
 
 case("walk_beyond_depth_limit_force_prompts", function()
@@ -153,6 +159,14 @@ case("mixed_shapes_decompose", function()
 end)
 
 -- Day-to-day shapes.
+case("expanding_redirects_with_substitutions_force_prompt", function()
+  -- An unquoted heredoc body / here-string is expanded by bash: its
+  -- substitutions actually run, so they never stay text-only scopes.
+  force_prompts("cat << EOF\n$(whoami)\nEOF")
+  force_prompts("cat << EOF\nx=$(rm -rf /)\nEOF")
+  force_prompts('cat <<< "$(whoami)"')
+end)
+
 case("realistic_commands_decompose", function()
   decomposes("cd $(pwd) && ls", { "cd $(pwd)", "pwd", "ls" })
   decomposes("git log $(git rev-parse HEAD)", { "git log $(git rev-parse HEAD)", "git rev-parse HEAD" })
