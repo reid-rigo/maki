@@ -52,31 +52,27 @@ local EXPANSION_THROUGH_TYPES = {
   variable_assignment = true,
 }
 
-local RESERVED_WORD_LIST = {
-  "do",
-  "done",
-  "if",
-  "then",
-  "elif",
-  "else",
-  "fi",
-  "while",
-  "until",
-  "for",
-  "in",
-  "case",
-  "esac",
-  "select",
-  "coproc",
-  "break",
-  "continue",
-  "return",
-  "exit",
+local RESERVED_WORDS = {
+  ["do"] = true,
+  ["done"] = true,
+  ["if"] = true,
+  ["then"] = true,
+  ["elif"] = true,
+  ["else"] = true,
+  ["fi"] = true,
+  ["while"] = true,
+  ["until"] = true,
+  ["for"] = true,
+  ["in"] = true,
+  ["case"] = true,
+  ["esac"] = true,
+  ["select"] = true,
+  ["coproc"] = true,
+  ["break"] = true,
+  ["continue"] = true,
+  ["return"] = true,
+  ["exit"] = true,
 }
-local RESERVED_WORDS = {}
-for _, word in ipairs(RESERVED_WORD_LIST) do
-  RESERVED_WORDS[word] = true
-end
 
 local function node_text(node, source)
   return maki.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
