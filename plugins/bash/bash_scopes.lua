@@ -39,11 +39,12 @@ local SUBST_COMMAND_TYPES = {
   variable_assignment = true,
 }
 
--- Words here execute their argv as commands rather than treat it as data:
--- shells and interpreters (most of the list), plus argument-forwarding
--- launchers (sudo/find -exec/xargs/timeout…). No rule can cover what they
--- actually run, so force-prompt when a substitution is anywhere in their argv.
-local EXECUTE_ARGV_WORDS = {
+-- Evaluating commands run their argv as a program rather than treating it as
+-- data: shells and interpreters (most of the list) evaluate it as source text,
+-- argument-forwarding launchers (sudo/find -exec/xargs/timeout…) evaluate it
+-- as which command to run. Either way no rule can cover what they actually
+-- execute, so force-prompt when a substitution is anywhere in their argv.
+local EVALUATING_COMMANDS = {
   eval = true,
   exec = true,
   source = true,
@@ -109,11 +110,11 @@ local RESERVED_WORD_LIST = {
   "exit",
 }
 local RESERVED_WORDS = {}
--- A word naming a language maki knows (`get_lang`) runs its argv as code:
--- a union with the static list, so new grammars extend the bail set without
--- touching this file.
-local function executes_argv(word)
-  return EXECUTE_ARGV_WORDS[word] or maki.treesitter.language.get_lang(word) ~= nil
+-- A command naming a language maki knows (`get_lang`) evaluates its argv as
+-- a program, interpreters included: a union with the static list, so new
+-- grammars extend the bail set without touching this file.
+local function is_evaluating(word)
+  return EVALUATING_COMMANDS[word] or maki.treesitter.language.get_lang(word) ~= nil
 end
 for _, word in ipairs(RESERVED_WORD_LIST) do
   RESERVED_WORDS[word] = true
@@ -266,7 +267,7 @@ collect_scopes = function(node, source, depth, inner)
     if first_word and RESERVED_WORDS[first_word] then
       return nil
     end
-  elseif first_word and executes_argv(first_word) and subtree_has_substitution(node) then
+  elseif first_word and is_evaluating(first_word) and subtree_has_substitution(node) then
     return nil
   end
 
@@ -301,5 +302,5 @@ end
 
 return {
   scopes = scopes,
-  argv_executing_words = EXECUTE_ARGV_WORDS,
+  evaluating_commands = EVALUATING_COMMANDS,
 }

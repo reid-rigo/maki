@@ -104,25 +104,25 @@ case("payload_from_a_substitution_force_prompts", function()
   decomposes("timeout 5 git status", { "timeout 5 git status" })
 end)
 
--- Pin the invariants of the argv-executing word list automatically: every
--- listed word must force-prompt when a substitution is in its argv, and the
--- common ones must still decompose without one. Adding a word to the list
+-- Pin the invariants of the evaluating-commands list automatically: every
+-- listed command must force-prompt when a substitution is in its argv, and the
+-- common ones must still decompose without one. Adding a command to the list
 -- adds its test case for free.
-case("argv_executing_words_bail_with_any_substitution", function()
-  local words = require("bash_scopes").argv_executing_words
-  assert(next(words), "argv_executing_words is empty")
+case("evaluating_commands_bail_with_any_substitution", function()
+  local commands = require("bash_scopes").evaluating_commands
+  assert(next(commands), "evaluating_commands is empty")
   local names = {}
-  for word in pairs(words) do
-    names[#names + 1] = word
+  for command in pairs(commands) do
+    names[#names + 1] = command
   end
   table.sort(names)
-  for _, word in ipairs(names) do
-    force_prompts(word .. ' "$(echo payload)"')
-    force_prompts(word .. ' arg "$(echo payload)"')
+  for _, command in ipairs(names) do
+    force_prompts(command .. ' "$(echo payload)"')
+    force_prompts(command .. ' arg "$(echo payload)"')
   end
 end)
 
-case("argv_executing_words_without_substitution_decompose", function()
+case("evaluating_commands_without_substitution_decompose", function()
   local words = "eval exec source sh bash zsh find sudo env ssh docker nohup nice timeout su"
   for word in words:gmatch("%a+") do
     decomposes(word .. " it", { word .. " it" })
