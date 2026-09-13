@@ -35,41 +35,12 @@ local SUBST_COMMAND_TYPES = {
   variable_assignment = true,
 }
 
--- Commands that run their argv as a program instead of data: shells and
--- interpreters, plus argv-forwarding launchers (sudo/find -exec/xargs/…).
--- Nothing a rule could name, so bail when a substitution is anywhere in
--- their argv. Treesitter language names (`bash`, `python`, `ruby`, `lua`)
--- are not duplicated: `is_evaluating` unions with `get_lang`; filetype-only
--- aliases like `sh`/`zsh` are not guaranteed registered, so pinned here.
-local EVALUATING_COMMANDS = {
-  "eval",
-  "exec",
-  "source",
-  "sh",
-  "zsh",
-  "ksh",
-  "dash",
-  "ash",
-  "awk",
-  "perl",
-  "python3",
-  "node",
-  "find",
-  "xargs",
-  "sudo",
-  "doas",
-  "env",
-  "ssh",
-  "docker",
-  "nohup",
-  "nice",
-  "timeout",
-  "su",
-  "setsid",
-  "stdbuf",
-  "watch",
-  "command",
-  "builtin",
+-- Elevated execution is never delegated to allow rules: always prompted
+-- (allow-once), whatever a `sudo *`-shaped rule says.
+local ALWAYS_PROMPT_COMMANDS = {
+  sudo = true,
+  doas = true,
+  su = true,
 }
 
 -- Expansion containers walked through; substitutions elsewhere
@@ -103,14 +74,6 @@ local RESERVED_WORD_LIST = {
   "exit",
 }
 local RESERVED_WORDS = {}
-local function is_evaluating(word)
-  for _, command in ipairs(EVALUATING_COMMANDS) do
-    if command == word then
-      return true
-    end
-  end
-  return maki.treesitter.language.get_lang(word) ~= nil
-end
 for _, word in ipairs(RESERVED_WORD_LIST) do
   RESERVED_WORDS[word] = true
 end
@@ -139,6 +102,31 @@ end
 
 local collect_scopes
 
+-- Collects the scopes of the substitutions a redirect expands (unquoted
+-- heredoc bodies, here-strings): they really execute, so their inner
+-- commands are scoped under their own text; user rules then decide.
+local function collect_redirect_scopes(node, source, depth, inner)
+  local out = {}
+  for child in node:iter_children() do
+    if child:named() then
+      if SUBST_TYPES[child:type()] then
+        local scopes = collect_scopes(child, source, depth + 1, inner)
+        if not scopes then
+          return nil
+        end
+        extend(out, scopes)
+      else
+        local scopes = collect_redirect_scopes(child, source, depth, inner)
+        if not scopes then
+          return nil
+        end
+        extend(out, scopes)
+      end
+    end
+  end
+  return out
+end
+
 -- Collects the scopes of substitutions nested inside a scope's own text;
 -- intermediate nodes here must not emit scopes, or the containing scope
 -- could never match a rule silently.
@@ -157,6 +145,12 @@ local function collect_expansion_scopes(node, source, depth, inner)
         extend(out, scopes)
       elseif EXPANSION_THROUGH_TYPES[child:type()] then
         local scopes = collect_expansion_scopes(child, source, depth + 1, inner)
+        if not scopes then
+          return nil
+        end
+        extend(out, scopes)
+      elseif REDIRECT_TYPES[child:type()] then
+        local scopes = collect_redirect_scopes(child, source, depth, inner)
         if not scopes then
           return nil
         end
@@ -188,9 +182,11 @@ collect_scopes = function(node, source, depth, inner)
       if child:named() and child_kind ~= "comment" then
         if REDIRECT_TYPES[child_kind] then
           -- Unquoted heredoc bodies / here-strings expand: their substitutions really execute.
-          if subtree_has_substitution(child) then
+          local sub_scopes = collect_redirect_scopes(child, source, depth, child_inner)
+          if not sub_scopes then
             return nil
           end
+          extend(outer, sub_scopes)
           redirects[#redirects + 1] = node_text(child, source)
         else
           local scopes, child_bind = collect_scopes(child, source, depth, child_inner)
@@ -261,7 +257,7 @@ collect_scopes = function(node, source, depth, inner)
     if first_word and RESERVED_WORDS[first_word] then
       return nil
     end
-  elseif first_word and is_evaluating(first_word) and subtree_has_substitution(node) then
+  elseif ALWAYS_PROMPT_COMMANDS[first_word] then
     return nil
   end
 
@@ -296,5 +292,4 @@ end
 
 return {
   scopes = scopes,
-  evaluating_commands = EVALUATING_COMMANDS,
 }

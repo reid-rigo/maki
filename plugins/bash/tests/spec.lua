@@ -87,46 +87,32 @@ case("unknown_node_in_substitution_force_prompts", function()
   force_prompts("echo $(( $(a) + 1 ))")
 end)
 
-case("payload_from_a_substitution_force_prompts", function()
-  -- No rule can cover what `eval`/`sh -c`/`-exec` actually run, so they
-  -- never decompose while a substitution is anywhere in their argv.
-  force_prompts('eval "$(git stash list)"')
-  force_prompts('sh -c "$(cat script.sh)"')
-  force_prompts('source "$(git rev-parse --show-toplevel)/foo"')
-  force_prompts('find . -name x -exec "$(echo rm -rf /)" {} +')
+case("interpreting_commands_decompose_under_their_own_scope", function()
+  -- Argo that treats its argv as code is decomposed like any other command:
+  -- scopes carry the interpreting command plus the substitution's real runs;
+  -- the user's stored rules decide (deny on any scope wins, an allow rule
+  -- must name every scope).
+  decomposes('eval "$(git stash list)"', { 'eval "$(git stash list)"', "git stash list" })
+  decomposes('sh -c "$(cat script.sh)"', { 'sh -c "$(cat script.sh)"', "cat script.sh" })
+  decomposes(
+    'source "$(git rev-parse --show-toplevel)/foo"',
+    { 'source "$(git rev-parse --show-toplevel)/foo"', "git rev-parse --show-toplevel" }
+  )
+  decomposes(
+    'find . -name x -exec "$(echo rm -rf /)" {} +',
+    { 'find . -name x -exec "$(echo rm -rf /)" {} +', "echo rm -rf /" }
+  )
+  decomposes('ssh host "$(echo cmd)"', { 'ssh host "$(echo cmd)"', "echo cmd" })
+  decomposes('awk "$(echo skip)"', { 'awk "$(echo skip)"', "echo skip" })
+  decomposes('timeout 5 "$(echo cmd)"', { 'timeout 5 "$(echo cmd)"', "echo cmd" })
+end)
+
+case("sudo_always_prompts", function()
+  -- Elevation is never delegated: no `sudo *` allow rule sticks past a prompt.
   force_prompts('sudo "$(echo reboot)"')
-  force_prompts('env "$(echo cmd)"')
-  force_prompts('ssh host "$(echo cmd)"')
-  force_prompts('awk "$(echo skip)"')
-  force_prompts('timeout 5 "$(echo cmd)"')
-  -- No substitution, no unknown payload: safe as plain argv data.
-  decomposes("find . -name x", { "find . -name x" })
-  decomposes("timeout 5 git status", { "timeout 5 git status" })
-end)
-
--- Pin the invariants of the evaluating-commands list automatically: every
--- listed command must force-prompt when a substitution is in its argv, and the
--- common ones must still decompose without one. Adding a command to the list
--- adds its test case for free.
-case("evaluating_commands_bail_with_any_substitution", function()
-  local commands = require("bash_scopes").evaluating_commands
-  assert(#commands > 0, "evaluating_commands is empty")
-  local names = {}
-  for i, command in ipairs(commands) do
-    names[i] = command
-  end
-  table.sort(names)
-  for _, command in ipairs(names) do
-    force_prompts(command .. ' "$(echo payload)"')
-    force_prompts(command .. ' arg "$(echo payload)"')
-  end
-end)
-
-case("evaluating_commands_without_substitution_decompose", function()
-  local words = "eval exec source sh bash zsh find sudo env ssh docker nohup nice timeout su"
-  for word in words:gmatch("%a+") do
-    decomposes(word .. " it", { word .. " it" })
-  end
+  force_prompts("sudo chown x y")
+  force_prompts("doas true")
+  force_prompts("su -")
 end)
 
 case("substitution_at_command_position_force_prompts", function()
@@ -140,20 +126,6 @@ end)
 case("substitution_in_expansion_default_force_prompts", function()
   -- `${x:-$(cmd)}` executes the substitution when `x` is unset.
   force_prompts("echo ${x:-$(cat f)}")
-end)
-
-case("language_registry_names_execute_argv", function()
-  -- Any word naming a language maki knows bails with a substitution in argv,
-  -- even beyond the hand-maintained list (go/rust/zig are registry-only).
-  -- Any command naming a treesitter *language* maki knows bails with a
-  -- substitution in argv, even beyond the hand-maintained list
-  -- (go/rust/zig are registry-only; bash/python/ruby/lua are removed there).
-  for _, word in ipairs({ "go", "rust", "zig", "python", "ruby" }) do
-    force_prompts(word .. ' "$(echo payload)"')
-  end
-  -- Registry coverage is filetype-only for shells, so `sh` stays pinned.
-  force_prompts('sh "$(echo payload)"')
-  decomposes("go test ./pkg", { "go test ./pkg" })
 end)
 
 case("walk_beyond_depth_limit_force_prompts", function()
@@ -213,12 +185,13 @@ case("mixed_shapes_decompose", function()
 end)
 
 -- Day-to-day shapes.
-case("expanding_redirects_with_substitutions_force_prompt", function()
+case("expanding_redirect_substitutions_decompose", function()
   -- An unquoted heredoc body / here-string is expanded by bash: its
-  -- substitutions actually run, so they never stay text-only scopes.
-  force_prompts("cat << EOF\n$(whoami)\nEOF")
-  force_prompts("cat << EOF\nx=$(rm -rf /)\nEOF")
-  force_prompts('cat <<< "$(whoami)"')
+  -- substitutions actually run, so they are scoped under their own text and
+  -- the user's rules decide (the outer scope already covers their raw text).
+  decomposes("cat << EOF\n$(whoami)\nEOF", { "cat << EOF\n$(whoami)\nEOF", "whoami" })
+  decomposes("cat << EOF\nx=$(rm -rf /)\nEOF", { "cat << EOF\nx=$(rm -rf /)\nEOF", "rm -rf /" })
+  decomposes('cat <<< "$(whoami)"', { 'cat <<< "$(whoami)"', "whoami" })
 end)
 
 case("realistic_commands_decompose", function()
