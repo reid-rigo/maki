@@ -294,4 +294,5 @@ end
 
 return {
   scopes = scopes,
+  self_executing_words = SELF_EXECUTING_WORDS,
 }

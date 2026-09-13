@@ -104,6 +104,31 @@ case("payload_from_a_substitution_force_prompts", function()
   decomposes("timeout 5 git status", { "timeout 5 git status" })
 end)
 
+-- Pin the invariants of the self-executing word list automatically: every
+-- listed word must force-prompt when a substitution is in its argv, and the
+-- common ones must still decompose without one. Adding a word to the list
+-- adds its test case for free.
+case("self_executing_words_bail_with_any_substitution", function()
+  local words = require("bash_scopes").self_executing_words
+  assert(next(words), "self_executing_words is empty")
+  local names = {}
+  for word in pairs(words) do
+    names[#names + 1] = word
+  end
+  table.sort(names)
+  for _, word in ipairs(names) do
+    force_prompts(word .. ' "$(echo payload)"')
+    force_prompts(word .. ' arg "$(echo payload)"')
+  end
+end)
+
+case("self_executing_words_without_substitution_decompose", function()
+  local words = "eval exec source sh bash zsh find sudo env ssh docker nohup nice timeout su"
+  for word in words:gmatch("%a+") do
+    decomposes(word .. " it", { word .. " it" })
+  end
+end)
+
 case("substitution_at_command_position_force_prompts", function()
   -- The substitution's output becomes the executed command itself; the
   -- command that runs is whatever it prints, which no rule can cover.
