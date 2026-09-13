@@ -87,6 +87,15 @@ case("unknown_node_in_substitution_force_prompts", function()
   force_prompts("echo $(( $(a) + 1 ))")
 end)
 
+case("payload_from_a_substitution_force_prompts", function()
+  -- No rule can cover what `eval`/`sh -c`/`-exec` actually run, so they
+  -- never decompose while a substitution is anywhere in their argv.
+  force_prompts('eval "$(git stash list)"')
+  force_prompts('sh -c "$(cat script.sh)"')
+  force_prompts('source "$(git rev-parse --show-toplevel)/foo"')
+  force_prompts('find . -name x -exec "$(echo rm -rf /)" {} +')
+end)
+
 case("walk_beyond_depth_limit_force_prompts", function()
   decomposes(
     "git log $(a $(b $(c $(d))))",
@@ -141,6 +150,14 @@ case("mixed_shapes_decompose", function()
   decomposes("grep -r --include='*.py' pat", { "grep -r --include='*.py' pat" })
   decomposes("echo 'quoted $(not a subst)'", { "echo 'quoted $(not a subst)'" })
   decomposes("x=$((1+2)) cd y && rm -rf /tmp/a/b/c/*", { "x=$((1+2)) cd y", "rm -rf /tmp/a/b/c/*" })
+end)
+
+-- Day-to-day shapes.
+case("realistic_commands_decompose", function()
+  decomposes("cd $(pwd) && ls", { "cd $(pwd)", "pwd", "ls" })
+  decomposes("git log $(git rev-parse HEAD)", { "git log $(git rev-parse HEAD)", "git rev-parse HEAD" })
+  decomposes("echo $(date +%F) > rev.txt", { "echo $(date +%F) > rev.txt", "date +%F" })
+  decomposes('grep "$pattern" f', { 'grep "$pattern" f' })
 end)
 
 th.report()

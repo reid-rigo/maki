@@ -85,6 +85,32 @@ local SUBST_COMMAND_TYPES = {
   variable_assignment = true,
 }
 
+-- Commands that take their payload from the command text (`eval "$(git
+-- status)"` prints whatever `git status` prints) cannot have that payload
+-- named as a scope — no rule can cover it — so with a substitution anywhere
+-- in the argv they keep today's force-prompt. `find`/`xargs` are here because
+-- `-exec`/their argv can carry a substitution-built command too.
+local SELF_EXECUTING_WORDS = {
+  eval = true,
+  exec = true,
+  source = true,
+  sh = true,
+  bash = true,
+  zsh = true,
+  ksh = true,
+  dash = true,
+  ash = true,
+  awk = true,
+  perl = true,
+  python = true,
+  python3 = true,
+  ruby = true,
+  lua = true,
+  node = true,
+  find = true,
+  xargs = true,
+}
+
 -- Nodes whose substitutions can be reached from a leaf without emitting a
 -- scope of the container's own; anything else carrying a substitution (the
 -- known case: `arithmetic_expansion`) is not confidently decomposable.
@@ -219,14 +245,16 @@ collect_scopes = function(node, source, depth, inner)
   -- command position is trusted; anything else — `$(! true)`, `$(done)` —
   -- bails to force-prompt.
   local text = node_text(node, source)
+  local first_word = text:match("^(%a+)")
   if inner then
     if not SUBST_COMMAND_TYPES[kind] then
       return nil
     end
-    local first_word = text:match("^(%a+)")
     if first_word and RESERVED_WORDS[first_word] then
       return nil
     end
+  elseif first_word and SELF_EXECUTING_WORDS[first_word] and subtree_has_substitution(node) then
+    return nil
   end
 
   local outer = text ~= "" and { text } or {}
