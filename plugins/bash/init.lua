@@ -1,6 +1,7 @@
 local truncate = require("maki.truncate")
 local ToolView = require("maki.tool_view")
 local bash_scopes = require("bash_scopes")
+local bash_unwrap = require("bash_unwrap")
 local output_limits = require("maki.output_limits")
 local partial = require("maki.partial")
 
@@ -189,6 +190,23 @@ maki.api.register_prompt_hint({
   slot = "tool_usage",
   content = "- Reserve bash for system commands (git, builds, tests). Do NOT use bash for file operations, including on files outside the working dir.",
 })
+
+-- Rewrites the command before the permission gate so existing `[bash]` allow
+-- rules can match what actually runs (timeout/nohup/... peel, for-loop
+-- expansion). Mutate the field rather than replacing the table, so the other
+-- input fields (timeout, workdir, description) survive the chain.
+maki.api.set_slot("tool.bash.input", function(prev, input, ctx)
+  if type(input) ~= "table" or type(input.command) ~= "string" then
+    return prev(input, ctx)
+  end
+  local inner = bash_unwrap.transform(input.command)
+  if not inner or inner == input.command then
+    return prev(input, ctx)
+  end
+  maki.log.info(("bash-unwrap: %s -> %s"):format(input.command, inner))
+  input.command = inner
+  return prev(input, ctx)
+end)
 
 local opts = maki.api.register_options(output_limits.extend({
   timeout_secs = {
