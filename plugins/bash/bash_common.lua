@@ -2,8 +2,6 @@
 -- the node-type / reserved-word tables both the permission walk and the
 -- unwrap rewrites use. One home so the two passes cannot drift apart.
 
-local M = {}
-
 -- tree-sitter's error recovery accepts invalid bash (`cmd && done` parses
 -- clean), and these words do not repeat faithfully when expanded, so both
 -- passes bail on them at command position.
@@ -41,7 +39,7 @@ local WALK_THROUGH_TYPES = {
 
 -- Parses a command and returns the root node, or nil when the grammar
 -- cannot parse it cleanly (which every caller treats as a bail: fail-closed).
-function M.parse(cmd)
+local function parse(cmd)
   local parser = maki.treesitter.get_parser(cmd, "bash")
   if not parser then
     return nil
@@ -58,11 +56,13 @@ function M.parse(cmd)
   return root
 end
 
-function M.text(node, source)
+local function text(node, source)
   return maki.treesitter.get_node_text(node, source)
 end
 
-M.RESERVED_WORDS = RESERVED_WORDS
-M.WALK_THROUGH_TYPES = WALK_THROUGH_TYPES
-
-return M
+return {
+  RESERVED_WORDS = RESERVED_WORDS,
+  WALK_THROUGH_TYPES = WALK_THROUGH_TYPES,
+  parse = parse,
+  text = text,
+}

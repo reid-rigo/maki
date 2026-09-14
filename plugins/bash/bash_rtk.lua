@@ -3,8 +3,7 @@
 -- Returns nil whenever rtk is unavailable, times out, or the rewritten
 -- command contains anything we cannot vouch for — the original then runs.
 
-local M = {}
-
+local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_UNSUPPORTED_FLAGS = {
   " -o ",
@@ -40,7 +39,7 @@ local function find_unsupported(cmd)
 end
 
 -- Returns the rewritten command, or nil to keep the original.
-function M.rewrite(command, ctx)
+local function rewrite(command, ctx)
   local config = ctx:config()
   if config and not config.rtk then
     return nil
@@ -87,4 +86,6 @@ function M.rewrite(command, ctx)
   return rewritten
 end
 
-return M
+return {
+  rewrite = rewrite,
+}
