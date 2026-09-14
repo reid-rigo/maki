@@ -3,6 +3,7 @@ local ToolView = require("maki.tool_view")
 local bash_scopes = require("bash_scopes")
 local bash_unwrap = require("bash_unwrap")
 local bash_rtk = require("bash_rtk")
+local shorten_path = require("maki.shorten_path")
 local output_limits = require("maki.output_limits")
 local partial = require("maki.partial")
 
@@ -28,34 +29,6 @@ local function parse_cd_hint(input)
     end
   end
   return input.command, nil
-end
-
-local function normalize_sep(s)
-  return s:gsub("\\", "/")
-end
-
-local function relative_path(p)
-  local np = normalize_sep(p)
-  local cwd = maki.uv.cwd()
-  if cwd then
-    cwd = normalize_sep(cwd)
-    if np:sub(1, #cwd + 1) == cwd .. "/" then
-      local rel = np:sub(#cwd + 2)
-      return rel == "" and "." or rel
-    end
-    if np == cwd then
-      return "."
-    end
-  end
-  local home = maki.uv.os_homedir()
-  if home then
-    home = normalize_sep(home)
-    if np:sub(1, #home + 1) == home .. "/" then
-      local rel = np:sub(#home + 2)
-      return rel == "" and "~" or "~/" .. rel
-    end
-  end
-  return p
 end
 
 local function build_header_lines(command)
@@ -164,7 +137,7 @@ maki.api.register_tool({
     local command, workdir = parse_cd_hint(input)
     local s = input.description or command
     if workdir then
-      s = s .. " in " .. relative_path(workdir)
+      s = s .. " in " .. shorten_path(workdir)
     end
     if input.timeout then
       local buf = maki.ui.buf()

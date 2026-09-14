@@ -25,7 +25,11 @@ local cases = {
   { "stdbuf -o0 cat big.log", "cat big.log" },
   { "stdbuf -o0 -eL ./server", "./server" },
   { "stdbuf --output=0 cat big.log", "cat big.log" },
+  { "stdbuf --input=0 --error=L ./server", "./server" },
   { "stdbuf -o0 -e 2 ./server", nil }, -- separate-arg form: bail
+  { "stdbuf", nil },
+  { "stdbuf -x cat big.log", nil }, -- unknown flag: do not guess
+  { "stdbuf -o", nil },
   { "nice git status", "git status" },
   { "nice -5 git status", "git status" },
   { "nice -n -5 git status", "git status" },
@@ -38,7 +42,7 @@ local cases = {
   { "timeout --kill-after=5 10 git status", "git status" },
   { "timeout 0.5 git status", "git status" },
   { "timeout 300ms git status", "git status" },
-  { "timeout --verbose 5 git status", nil }, -- unknown flag
+  { "timeout --verbose 5 git status", "git status" },
   { "timeout 5x git status", nil }, -- bad duration
   { "timeout 5 -n 5 git status", nil }, -- flag after duration: getopt permutes
   { "timeout 5 > out", nil }, -- inner would become a bare redirect
@@ -114,6 +118,35 @@ local cases = {
   { "timeout 5 cmd2 x", "cmd2 x" }, -- digits mid-word are not redirects
   { "timeout 5 >out cmd", nil }, -- redirect between wrapper and inner: bail
 
+  ------------------------------------------------------------------- env/time --
+  { "env git status", "git status" },
+  { "env A=1 B=2 npm test", "A=1 B=2 npm test" },
+  { 'env "A=1 b" cmd', '"A=1 b" cmd' }, -- quoted assignment stays verbatim
+  { "env A=1 timeout 5 cmd", "A=1 timeout 5 cmd" }, -- assignments stop the peel at env
+  { "env", nil },
+  { "env A=1", "A=1" },
+  { "env -i git status", nil }, -- drops the environment
+  { "env -u FOO git status", nil }, -- edits the environment
+  { "env -0 bash -c 'true'", nil },
+  { "env -- git status", nil },
+  { "time git status", "git status" },
+  { "time -p git status", "git status" },
+  { "time", nil },
+  { "time -p", nil },
+  { "time -f '%e' git status", nil }, -- GNU format string: not transparent
+  { "gtimeout 5 git status", "git status" },
+  { "timeout -v 5 git status", "git status" },
+  { "timeout --verbose 5 git status", "git status" },
+  { "nohup env time git status", "git status" }, -- chained wrappers
+  { "repeat 3 git status", nil }, -- zsh keyword; would become a real run if peeled
+  { "time '-p' git status", "'-p' git status" }, -- quoting hides the flag from the peel matcher
+  { "env FOO=1 npm test && env FOO=2 npm test", "FOO=1 npm test && FOO=2 npm test" },
+  { "env FOO=1 git status > out", "FOO=1 git status > out" },
+  { "time git status && time npm test", "git status && npm test" },
+  { "gtimeout -k 5 10 git status", "git status" },
+  { "timeout 5 nohup env time nice command git status", nil }, -- past MAX_DEPTH
+  { "timeout 5 nohup env time git status", "git status" }, -- at the cap, still peels
+
   ------------------------------------------------------- for-loop expansion --
   { "for x in a b c; do git add $x; done", "git add a; git add b; git add c" },
   { "for d in api frontend shared; do du -sh $d; done", "du -sh api; du -sh frontend; du -sh shared" },
@@ -140,7 +173,7 @@ local cases = {
   -- loop expansion feeds back into the peel path
   { "for x in a b; do timeout 5 git add $x; done", "git add a; git add b" },
   { "for x in a; do timeout 5 cmd $x $x; done", "cmd a a" }, -- two substitution spans
-  { "for x in a; do timeout --verbose 5 cmd $x; done", "timeout --verbose 5 cmd a" }, -- peel bails, expansion kept
+  { "for x in a; do timeout --verbose 5 cmd $x; done", "cmd a" },
 
   -- multi-command bodies repeat faithfully
   {

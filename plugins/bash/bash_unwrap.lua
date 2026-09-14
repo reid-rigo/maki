@@ -5,7 +5,8 @@
 -- command that executes, so the gate always judges what runs):
 --
 -- 1. Wrapper peel: drop benign prefix wrappers (timeout, nice, stdbuf,
---    nohup, command) from the front of any top-level command.
+--    nohup, command, env, time) from the front of any top-level command.
+--    `gtimeout` (macOS coreutils) peels like timeout.
 --    `timeout 8 npm run dev 2>&1 | head -40` -> `npm run dev 2>&1 | head -40`.
 --    Every command in a pipeline/chain gets its own independent chance;
 --    commands that do not peel are left byte-identical.
@@ -74,6 +75,8 @@ local function peel_timeout(args)
         return nil
       end
       i = i + 2
+    elseif t == "-v" or t == "--verbose" then
+      i = i + 1
     elseif t == "--preserve-status" or t == "--foreground" then
       i = i + 1
     elseif t:match("^%-%-kill%-after=") or t:match("^%-%-signal=") then
@@ -162,12 +165,46 @@ local function peel_bare(args)
   return 0
 end
 
+-- `env` runs its arguments in the inherited environment as-is, so peeling
+-- means dropping just the wrapper word: assignments keep their position and
+-- meaning (`env A=1 cmd` -> `A=1 cmd`). Flags are environment changes
+-- (`-i` drops it, `-u X` removes from it), never transparent: bail.
+local function peel_env(args)
+  local a = args[1]
+  if not a or a.t:sub(1, 1) == "-" then
+    return nil
+  end
+  return 0
+end
+
+-- bash's `time` keyword (also GNU time): `time cmd` and `time -p cmd` run
+-- cmd unrestricted; the real/user/sys report is wrapper semantics, dropped
+-- like timeout's kill. GNU format flags (`-f FMT`) bail.
+local function peel_time(args)
+  local a = args[1]
+  if not a then
+    return nil
+  end
+  if a.t == "-p" then
+    if not args[2] then
+      return nil
+    end
+    return 1
+  elseif a.t:sub(1, 1) == "-" then
+    return nil
+  end
+  return 0
+end
+
 local WRAPPERS = {
   timeout = peel_timeout,
   nice = peel_nice,
   stdbuf = peel_stdbuf,
   nohup = peel_bare,
   command = peel_bare,
+  env = peel_env,
+  time = peel_time,
+  gtimeout = peel_timeout,
 }
 
 -- Try to peel wrappers off one command node. On success appends a deletion
