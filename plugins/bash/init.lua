@@ -85,10 +85,8 @@ maki.api.register_prompt_hint({
   content = "- Reserve bash for system commands (git, builds, tests). Do NOT use bash for file operations, including on files outside the working dir.",
 })
 
--- Rewrites the command before the permission gate so existing `[bash]` allow
--- rules can match what actually runs (timeout/nohup/... peel, for-loop
--- expansion). Mutate the field rather than replacing the table, so the other
--- input fields (timeout, workdir, description) survive the chain.
+-- Rewrites the command before the permission gate (timeout/nohup/... peel,
+-- for-loop expansion). Mutate the field so the other input fields survive.
 maki.api.set_slot("tool.bash.input", function(prev, input, ctx)
   if type(input) ~= "table" or type(input.command) ~= "string" then
     return prev(input, ctx)
@@ -254,8 +252,7 @@ maki.api.register_tool({
       end,
     })
 
-    -- Esc or deadline: hand back the lines streamed so far, so the model
-    -- keeps what the user just watched instead of a bare error.
+    -- Esc or deadline: hand back what streamed so far, not a bare error
     maki.async.on_cancel(function(reason)
       if finished then
         return

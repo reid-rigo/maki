@@ -1,7 +1,7 @@
 -- Decomposes a bash command into permission scopes: one per command the
 -- shell would execute; substitutions are walked into and their inner
--- commands become extra scopes. Every bail is fail-closed: the caller
--- force-prompts the full command as before. Not sure → prompt.
+-- commands become extra scopes. Every bail is fail-closed: not sure → the
+-- caller force-prompts the full command.
 local common = require("bash_common")
 
 local MAX_WALK_DEPTH = 4
@@ -24,8 +24,7 @@ local SUBST_COMMAND_TYPES = {
   variable_assignment = true,
 }
 
--- Elevated execution is never delegated to allow rules: always prompted
--- (allow-once), whatever a `sudo *`-shaped rule says.
+-- Elevated execution: always prompted, never delegated to allow rules.
 local ALWAYS_PROMPT_COMMANDS = {
   sudo = true,
   doas = true,
@@ -70,9 +69,8 @@ end
 
 local collect_scopes
 
--- Collects the scopes of the substitutions a redirect expands (unquoted
--- heredoc bodies, here-strings): they really execute, so their inner
--- commands are scoped under their own text; user rules then decide.
+-- Substitutions a redirect expands (unquoted heredocs, here-strings)
+-- really execute: their inner commands get their own scopes.
 local function collect_redirect_scopes(node, source, depth, inner)
   local out = {}
   for child in node:iter_children() do
@@ -91,9 +89,9 @@ local function collect_redirect_scopes(node, source, depth, inner)
   return out
 end
 
--- Collects the scopes of substitutions nested inside a scope's own text;
--- intermediate nodes here must not emit scopes, or the containing scope
--- could never match a rule silently.
+-- Scopes of substitutions nested inside a scope's own text. Intermediate
+-- nodes here must not emit scopes, or the containing scope could never
+-- match a rule silently.
 local function collect_expansion_scopes(node, source, depth, inner)
   if not subtree_has_substitution(node) then
     return {}
@@ -121,10 +119,9 @@ local function collect_expansion_scopes(node, source, depth, inner)
   return out
 end
 
--- Chain nodes (substitutions and everything walked through) yield one scope
--- per inner command plus a bind position for outer redirects. The bind
--- position is the list index an outer redirect of this chain would bind to:
--- the last chain-level scope, never a substitution scope.
+-- Chain nodes yield one scope per inner command plus a bind position: the
+-- list index an outer redirect of this chain binds to (the last
+-- chain-level scope, never a substitution scope).
 local function collect_chain(node, source, depth, inner)
   local outer, redirects = {}, {}
   local bind
@@ -133,7 +130,6 @@ local function collect_chain(node, source, depth, inner)
     local child_kind = child:type()
     if child:named() and child_kind ~= "comment" then
       if REDIRECT_TYPES[child_kind] then
-        -- Unquoted heredoc bodies / here-strings expand: their substitutions really execute.
         local sub_scopes = collect_redirect_scopes(child, source, depth, child_inner)
         if not sub_scopes then
           return nil
@@ -161,7 +157,7 @@ local function collect_chain(node, source, depth, inner)
     elseif SUBST_TYPES[node:type()] then
       return nil -- $(> f): a bare redirect, nothing to judge
     else
-      -- Bodiless `> log` still truncates: it must be its own scope.
+      -- Bodiless `> log` still truncates: its own scope
       outer[1] = text
       bind = 1
     end
@@ -173,17 +169,17 @@ local function collect_chain(node, source, depth, inner)
   return outer, bind
 end
 
--- Anything unknown becomes a scope of its own raw text: it has to end up
--- in front of the user, not get dropped. Inside a walked substitution
--- though, only what the grammar puts at command position is trusted.
+-- Unknown nodes become a scope of their own raw text: nothing gets dropped.
+-- Inside a walked substitution though, only what the grammar puts at
+-- command position is trusted.
 local function collect_leaf(node, source, depth, inner)
   local text = node_text(node, source)
   local first_word = text:match("^(%a+)")
 
   for child in node:iter_children() do
     if child:named() and child:type() ~= "comment" then
-      -- A substitution at command position runs its output as the command
-      -- (`"$(echo ls)"` executes `ls`): no rule can cover that payload.
+      -- a substitution at command position runs its output as the
+      -- command (`"$(echo ls)"` runs `ls`): no rule covers that payload
       local cmd_kind = child:type()
       if
         SUBST_TYPES[cmd_kind]

@@ -1,31 +1,19 @@
--- bash-unwrap: rewrite bash commands before maki's permission gate so the
--- project's existing `[bash]` allow rules can match what actually runs.
+-- Rewrites bash commands before the permission gate so the project's
+-- `[bash]` allow rules match what actually runs.
 --
--- Two transforms, both rewrite-only (the command handed back is exactly the
--- command that executes, so the gate always judges what runs):
+-- Two transforms, checked by tests/unwrap_spec.lua, both rewrite-only: the
+-- command handed back is exactly the command that executes.
 --
--- 1. Wrapper peel: drop benign prefix wrappers (timeout, nice, stdbuf,
---    nohup, command, env, time) from the front of any top-level command.
---    `gtimeout` (macOS coreutils) peels like timeout.
---    `timeout 8 npm run dev 2>&1 | head -40` -> `npm run dev 2>&1 | head -40`.
---    Every command in a pipeline/chain gets its own independent chance;
+-- 1. peel: drop benign prefix wrappers (timeout, gtimeout, nice, stdbuf,
+--    nohup, command, env, time) in front of any top-level command. Wrapper
+--    semantics go with the wrapper text (`timeout 5 cmd` runs without the
+--    5s kill); every command in a pipeline/chain gets its own chance, and
 --    commands that do not peel are left byte-identical.
--- 2. For-loop expansion: `for x in a b; do CMD $x; done` becomes
---    `CMD a; CMD b` when the loop is simple enough that the expansion is
---    exactly equivalent (literal word list, whitelist body).
+-- 2. loop expansion: `for x in a b; do CMD $x; done` -> `CMD a; CMD b`
+--    when the expansion is exactly equivalent.
 --
--- Env assignments (FOO=x cmd) are deliberately NOT peeled: dropping them
--- would change the environment the command sees (NODE_ENV=production npm
--- test would silently run without it).
---
--- Wrapper semantics are dropped with the wrapper text: `timeout 5 cmd` runs
--- without the 5s kill (the bash tool's own deadline still applies), nice/
--- stdbuf priorities are lost. Fine for agent commands.
---
--- Parsing is tree-sitter (the same grammar bash_scopes uses), and every
--- rewrite is a byte-span edit on the original text: untouched text is
--- preserved verbatim, quoting included. Anything the grammar cannot parse
--- cleanly passes through untouched.
+-- Env assignments (FOO=x cmd) are NOT peeled: dropping them would change
+-- the environment the command sees.
 
 local common = require("bash_common")
 
@@ -51,8 +39,8 @@ local function is_duration(t)
   return t:match("^%d+%.?%d*ms$") ~= nil or t:match("^%d+%.?%d*[smhd]$") ~= nil or t:match("^%d+%.?%d*$") ~= nil
 end
 
--- Each parser takes the argument list AFTER its wrapper word (nodes with
--- .t = text, .s = start byte) and returns how many leading arguments are
+-- Each parser takes the arguments after its wrapper word
+-- ({t = text, s = start byte}) and returns how many leading arguments are
 -- wrapper-owned, or nil when not confidently peelable.
 
 local function peel_timeout(args)
@@ -82,7 +70,7 @@ local function peel_timeout(args)
     elseif t:match("^%-%-kill%-after=") or t:match("^%-%-signal=") then
       i = i + 1
     elseif t:sub(1, 1) == "-" then
-      return nil -- unknown flag: do not guess
+      return nil
     else
       if not is_duration(t) then
         return nil
@@ -92,8 +80,7 @@ local function peel_timeout(args)
         return nil -- duration with no command after it
       end
       if nxt.t:sub(1, 1) == "-" then
-        -- GNU getopt permutes trailing options, so a flag after the duration
-        -- may still belong to timeout. Not confidently peelable.
+        -- getopt permutes: a trailing flag may still belong to timeout
         return nil
       end
       return i
@@ -129,11 +116,10 @@ local function peel_nice(args)
   elseif t:sub(1, 1) == "-" then
     return nil
   end
-  return 0 -- no adjustment given
+  return 0
 end
 
--- Attached short forms (-o0, -eL) and long forms (--output=0) only; the
--- separate "-o 0" form bails.
+-- attached short forms (-o0, -eL) and long forms (--output=0) only
 local function peel_stdbuf(args)
   local i = 1
   while true do
@@ -160,26 +146,20 @@ end
 local function peel_bare(args)
   local a = args[1]
   if not a or a.t:sub(1, 1) == "-" then
-    return nil -- `command -v x` and friends: keep today's behavior
+    return nil -- `command -v x`: no inner command to expose
   end
   return 0
 end
 
--- `env` runs its arguments in the inherited environment as-is, so peeling
--- means dropping just the wrapper word: assignments keep their position and
--- meaning (`env A=1 cmd` -> `A=1 cmd`). Flags are environment changes
--- (`-i` drops it, `-u X` removes from it), never transparent: bail.
+-- flags are environment changes (-i drops it, -u X edits it), never transparent
 local function peel_env(args)
   local a = args[1]
   if not a or a.t:sub(1, 1) == "-" then
     return nil
   end
-  return 0
+  return 0 -- assignments among the args stay verbatim (`env A=1 cmd` -> `A=1 cmd`)
 end
 
--- bash's `time` keyword (also GNU time): `time cmd` and `time -p cmd` run
--- cmd unrestricted; the real/user/sys report is wrapper semantics, dropped
--- like timeout's kill. GNU format flags (`-f FMT`) bail.
 local function peel_time(args)
   local a = args[1]
   if not a then
@@ -191,7 +171,7 @@ local function peel_time(args)
     end
     return 1
   elseif a.t:sub(1, 1) == "-" then
-    return nil
+    return nil -- GNU format flags (-f FMT) bail
   end
   return 0
 end
@@ -207,9 +187,8 @@ local WRAPPERS = {
   gtimeout = peel_timeout,
 }
 
--- Try to peel wrappers off one command node. On success appends a deletion
--- span { s, e, val = "" } covering the wrapper text (from the command word
--- up to the first argument of the inner command).
+-- Appends a deletion span covering the wrapper text of one command node,
+-- from the wrapper word up to the first argument of the inner command.
 local function peel_command(node, source, edits)
   local names = node:field("name")
   if #names ~= 1 then
@@ -220,8 +199,7 @@ local function peel_command(node, source, edits)
     return
   end
 
-  -- An env-assignment prefix means the wrapper runs in a modified
-  -- environment; we do not peel those at all.
+  -- an A=1 prefix means the wrapper runs under a modified env: no peel
   for _, kid in ipairs(node:named_children()) do
     if kid:type() == "variable_assignment" then
       return
@@ -243,7 +221,7 @@ local function peel_command(node, source, edits)
   local depth = 1
   while true do
     if consumed >= #args then
-      return -- wrapper tokens with no inner command left
+      return
     end
     local fn = WRAPPERS[args[consumed + 1].t]
     if not fn then
@@ -265,8 +243,7 @@ local function peel_command(node, source, edits)
   end
 
   local inner = args[consumed + 1]
-  -- A redirect sitting between the wrapper and the inner command would be
-  -- swallowed by the deletion (`timeout 5 >out cmd`), changing semantics.
+  -- a redirect between wrapper and inner would be swallowed by the deletion
   for _, r in ipairs(node:field("redirect")) do
     if start_byte(r) < inner.s then
       return
@@ -288,8 +265,7 @@ local function collect_commands(node, out)
   end
 end
 
--- Apply span edits to source in one ascending pass. Spans are 0-based
--- half-open byte offsets and must not overlap.
+-- ascending pass over 0-based half-open, non-overlapping spans
 local function apply_edits(source, edits)
   table.sort(edits, function(a, b)
     return a.s < b.s
@@ -304,9 +280,6 @@ local function apply_edits(source, edits)
   return table.concat(parts)
 end
 
--- Strips wrapper prefixes from every command the tree reaches at statement
--- level (through pipelines/lists/redirects). Returns the rewritten text, or
--- nil when no command peels.
 local function peel(root, source)
   local cmds = {}
   collect_commands(root, cmds)
@@ -348,9 +321,8 @@ local function has_reserved_command(node, source)
   return false
 end
 
--- Expand one for_statement into "BODY(v1); BODY(v2)". Returns the
--- replacement text, or nil when the loop is not exactly equivalent to its
--- expansion.
+-- Expands one for_statement into `BODY(v1); BODY(v2)`, or nil when the loop
+-- is not exactly equivalent to its expansion.
 local function expand_for(for_node, source)
   local vars = for_node:field("variable")
   if #vars ~= 1 then
@@ -361,11 +333,11 @@ local function expand_for(for_node, source)
     return nil
   end
 
-  -- Values must be literal words: no expansions, globs, quotes, escapes.
   local value_nodes = for_node:field("value")
   if #value_nodes == 0 or #value_nodes > MAX_LOOP_VALUES then
     return nil
   end
+  -- values must be literal words: no expansions, globs, quotes, escapes
   local values = {}
   for _, v in ipairs(value_nodes) do
     local t = v:type()
@@ -399,15 +371,11 @@ local function expand_for(for_node, source)
   if body == "" then
     return nil
   end
-  -- Start offset of the trimmed body in source (0-based). body_raw begins
-  -- at 0-based do_end, so after stripping #lead characters the body starts
-  -- at do_end + #lead; substitution spans are stored relative to this.
+  -- b0: start offset of the trimmed body; substitution spans are relative to it
   local b0 = do_end + #lead
 
-  -- Strip trailing ";" runs (bash allows `do cmd; done`), then reject
-  -- bodies whose edges would make the "; "-joined expansion invalid or
-  -- change semantics: a leading separator, or a trailing `&` (each
-  -- repetition would background into the next).
+  -- a leading separator or trailing `&` makes the "; "-joined expansion
+  -- invalid or change semantics
   body = body:match("^(.-)[%s;]*$")
   if body == "" then
     return nil
@@ -416,9 +384,8 @@ local function expand_for(for_node, source)
     return nil
   end
 
-  -- Walk the body: check that every statement repeats faithfully, and
-  -- collect $var/${var} spans to substitute, bail on
-  -- anything the per-value repetition cannot replicate.
+  -- collect $var/${var} spans; bail on anything per-value repetition
+  -- cannot replicate
   local spans = {}
   local function contains_var(node)
     if node:type() == "variable_name" then
@@ -438,8 +405,7 @@ local function expand_for(for_node, source)
       return nil
     end
     if t == "expansion" then
-      -- ${...}: only the exact `${var}` form is substitutable. The variable
-      -- name may be a named node or a hidden token, so check both.
+      -- only the exact `${var}` form is substitutable
       local tv = text(node, source)
       local ekids = node:named_children()
       local exact = tv == "${" .. var .. "}"
@@ -449,16 +415,16 @@ local function expand_for(for_node, source)
         return true
       end
       if contains_var(node) then
-        return nil -- ${x:-d} and friends: not exactly substitutable
+        return nil -- ${x:-d}: not exactly substitutable
       end
-      return true -- ${y} etc: keep verbatim
+      return true
     end
     if t == "simple_expansion" then
-      -- $var: the variable name is a hidden token, so match the text.
+      -- the variable name is a hidden token, so match the text
       if text(node, source) == "$" .. var then
         spans[#spans + 1] = { s = start_byte(node) - b0, e = end_byte(node) - b0 }
       end
-      return true -- other variables ($y, $?, $@): keep verbatim
+      return true
     end
     for _, kid in ipairs(node:named_children()) do
       if not scan(kid) then
@@ -495,8 +461,7 @@ end
 
 -- The loop must be the entire command: inside a list or under a redirect,
 -- splicing in "a; b" would change precedence or redirect scope. child_count
--- (named + anonymous) guards trailing operators like the `&` of `done &`,
--- which the grammar hangs off the program next to the loop.
+-- guards trailing operators like the `&` of `done &`.
 local function whole_command_loop(root)
   local kids = root:named_children()
   if #kids == 1 and kids[1]:type() == "for_statement" and root:child_count() == 1 then
@@ -505,12 +470,6 @@ local function whole_command_loop(root)
   return nil
 end
 
--- Runs the two transforms in order over `cmd`, with these exact semantics:
---   1. When the command is exactly `for x in a b; do BODY $x; done`, expand
---      it to `BODY a; BODY b` — or bail (nil) when the expansion is not
---      exactly equivalent.
---   2. Then peel wrapper prefixes everywhere, including inside the
---      expansion's output. Nothing further to rewrite keeps the expansion.
 local function transform(cmd)
   if type(cmd) ~= "string" then
     return nil
@@ -533,9 +492,9 @@ local function transform(cmd)
     s = expanded
     root = common.parse(s)
     if not root then
-      return s -- expansion text failed to re-parse; keep it as it stands
+      return s
     end
-    -- Even with no wrapper left to peel, the expansion itself is the rewrite.
+    -- even with no wrapper left, the expansion itself is the rewrite
     return peel(root, s) or s
   end
 

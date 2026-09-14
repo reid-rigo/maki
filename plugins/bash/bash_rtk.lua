@@ -1,9 +1,7 @@
--- Optional command rewriting through `rtk`: when installed and not disabled
--- in config, some `cargo`/`find` invocations are rewritten before they run.
--- Returns nil whenever rtk is unavailable, times out, or the rewritten
--- command contains anything we cannot vouch for — the original then runs.
+-- Optional `rtk` command rewriting. Never rewrites otherwise: unavailable
+-- rtk, timeout, or anything the rewrite output cannot be vouched for runs
+-- the original command.
 
-local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_REWRITE_TIMEOUT_MS = 2000
 local RTK_UNSUPPORTED_FLAGS = {
   " -o ",
@@ -38,7 +36,6 @@ local function find_unsupported(cmd)
   return false
 end
 
--- Returns the rewritten command, or nil to keep the original.
 local function rewrite(command, ctx)
   local config = ctx:config()
   if config and not config.rtk then
