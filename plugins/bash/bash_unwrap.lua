@@ -26,11 +26,13 @@
 -- preserved verbatim, quoting included. Anything the grammar cannot parse
 -- cleanly passes through untouched.
 
+local common = require("bash_common")
+
 local MAX_DEPTH = 4
 local MAX_LOOP_VALUES = 64
 
 local function text(node, source)
-  return maki.treesitter.get_node_text(node, source)
+  return common.text(node, source)
 end
 
 local function start_byte(node)
@@ -41,23 +43,6 @@ end
 local function end_byte(node)
   local _, _, e = node:end_()
   return e
-end
-
-local function parse_bash(cmd)
-  local parser = maki.treesitter.get_parser(cmd, "bash")
-  if not parser then
-    return nil
-  end
-  local trees = parser:parse()
-  local tree = trees and trees[1]
-  if not tree then
-    return nil
-  end
-  local root = tree:root()
-  if root:has_error() then
-    return nil
-  end
-  return root
 end
 
 -- timeout durations: 5, 0.5, 5s, 5m, 1h, 300ms
@@ -254,15 +239,8 @@ local function peel_command(node, source, edits)
   edits[#edits + 1] = { s = start_byte(node), e = inner.s, val = "" }
 end
 
-local WALK_TYPES = {
-  program = true,
-  list = true,
-  pipeline = true,
-  redirected_statement = true,
-}
-
 local function collect_commands(node, out)
-  if WALK_TYPES[node:type()] then
+  if common.WALK_THROUGH_TYPES[node:type()] then
     for _, kid in ipairs(node:named_children()) do
       if kid:type() ~= "comment" then
         collect_commands(kid, out)
@@ -289,6 +267,19 @@ local function apply_edits(source, edits)
   return table.concat(parts)
 end
 
+-- Strips wrapper prefixes from every command the tree reaches at statement
+-- level (through pipelines/lists/redirects). Returns the rewritten text, or
+-- nil when no command peels.
+local function peel(root, source)
+  local cmds = {}
+  collect_commands(root, cmds)
+  local edits = {}
+  for _, c in ipairs(cmds) do
+    peel_command(c, source, edits)
+  end
+  return #edits > 0 and apply_edits(source, edits) or nil
+end
+
 ------------------------------------------------------------------- for loops --
 
 local BODY_STMT_TYPES = {
@@ -308,33 +299,8 @@ local BAIL_BODY_TYPES = {
   brace_expression = true,
 }
 
--- Reserved words and flow control at command position: real bash rejects
--- most of these (tree-sitter's error recovery can accept them), and the
--- rest (break/exit) does not repeat faithfully.
-local RESERVED_WORDS = {
-  ["do"] = true,
-  ["done"] = true,
-  ["if"] = true,
-  ["then"] = true,
-  ["elif"] = true,
-  ["else"] = true,
-  ["fi"] = true,
-  ["while"] = true,
-  ["until"] = true,
-  ["for"] = true,
-  ["in"] = true,
-  ["case"] = true,
-  ["esac"] = true,
-  ["select"] = true,
-  ["coproc"] = true,
-  ["break"] = true,
-  ["continue"] = true,
-  ["return"] = true,
-  ["exit"] = true,
-}
-
 local function has_reserved_command(node, source)
-  if node:type() == "command_name" and RESERVED_WORDS[text(node, source)] then
+  if node:type() == "command_name" and common.RESERVED_WORDS[text(node, source)] then
     return true
   end
   for _, kid in ipairs(node:named_children()) do
@@ -490,6 +456,24 @@ end
 
 --------------------------------------------------------------------- entry --
 
+-- The loop must be the entire command: inside a list or under a redirect,
+-- splicing in "a; b" would change precedence or redirect scope. child_count
+-- (named + anonymous) guards trailing operators like the `&` of `done &`,
+-- which the grammar hangs off the program next to the loop.
+local function whole_command_loop(root)
+  local kids = root:named_children()
+  if #kids == 1 and kids[1]:type() == "for_statement" and root:child_count() == 1 then
+    return kids[1]
+  end
+  return nil
+end
+
+-- Runs the two transforms in order over `cmd`, with these exact semantics:
+--   1. When the command is exactly `for x in a b; do BODY $x; done`, expand
+--      it to `BODY a; BODY b` — or bail (nil) when the expansion is not
+--      exactly equivalent.
+--   2. Then peel wrapper prefixes everywhere, including inside the
+--      expansion's output. Nothing further to rewrite keeps the expansion.
 local function transform(cmd)
   if type(cmd) ~= "string" then
     return nil
@@ -498,41 +482,27 @@ local function transform(cmd)
   if s == "" then
     return nil
   end
-  local root = parse_bash(s)
+  local root = common.parse(s)
   if not root then
     return nil
   end
 
-  -- For-loop expansion only when the loop is the entire command: inside a
-  -- list or under a redirect, splicing in "a; b" would change precedence
-  -- or redirect scope. child_count (named + anonymous) guards trailing
-  -- operators like the `&` of `done &`, which the grammar hangs off the
-  -- program next to the loop.
-  local kids = root:named_children()
-  if #kids == 1 and kids[1]:type() == "for_statement" and root:child_count() == 1 then
-    local expanded = expand_for(kids[1], s)
+  local loop = whole_command_loop(root)
+  if loop then
+    local expanded = expand_for(loop, s)
     if not expanded then
       return nil
     end
-    -- The expansion still goes through the peel path (a loop body like
-    -- `timeout 5 cmd $x` should end up fully unwrapped). Recursion cannot
-    -- loop forever: the body grammar excludes for_statement at statement
-    -- position, so each level strictly shrinks the text. If the expanded
-    -- text needs no further rewrite, transform returns nil and we keep the
-    -- expansion itself.
-    return transform(expanded) or expanded
+    s = expanded
+    root = common.parse(s)
+    if not root then
+      return s -- expansion text failed to re-parse; keep it as it stands
+    end
+    -- Even with no wrapper left to peel, the expansion itself is the rewrite.
+    return peel(root, s) or s
   end
 
-  local cmds = {}
-  collect_commands(root, cmds)
-  local edits = {}
-  for _, c in ipairs(cmds) do
-    peel_command(c, s, edits)
-  end
-  if #edits == 0 then
-    return nil
-  end
-  return apply_edits(s, edits)
+  return peel(root, s)
 end
 
 return {
